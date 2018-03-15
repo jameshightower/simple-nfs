@@ -49,6 +49,7 @@ import java.security.Principal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.TimeUnit;
 
 import org.dcache.auth.GidPrincipal;
 import org.dcache.auth.UidPrincipal;
@@ -56,6 +57,14 @@ import org.dcache.nfs.status.NotSuppException;
 import org.dcache.nfs.status.PermException;
 import org.dcache.nfs.status.ServerFaultException;
 import org.dcache.nfs.vfs.DirectoryStream;
+
+import com.google.common.base.MoreObjects;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.LoadingCache;
+import com.google.common.cache.Cache;
+
+
 
 import static java.nio.file.LinkOption.NOFOLLOW_LINKS;
 
@@ -73,6 +82,18 @@ public class LocalFileSystem implements VirtualFileSystem {
     private final NfsIdMapping _idMapper = new SimpleIdMap();
     private final UserPrincipalLookupService _lookupService =
             FileSystems.getDefault().getUserPrincipalLookupService();
+
+    private final LoadingCache<Inode, List<DirectoryEntry> > directoryCache = CacheBuilder.newBuilder()
+       .maximumSize(1000000)
+       .expireAfterWrite(5, TimeUnit.SECONDS)
+       .build(
+           new CacheLoader<Inode, List<DirectoryEntry> >() {
+             public List<DirectoryEntry>  load(Inode inode) throws IOException {
+               return listLoader(inode);
+             }
+           });
+
+
 
     private final static boolean IS_UNIX;
     static {
@@ -98,6 +119,12 @@ public class LocalFileSystem implements VirtualFileSystem {
     private long resolvePath(Path path) throws NoEntException {
         Long inodeNumber = pathToInode.get(path);
         if (inodeNumber == null) {
+            // Does the file now exist?
+            if (Files.exists(path, NOFOLLOW_LINKS)) {
+              long newInodeNumber = fileId.getAndIncrement();
+              map(newInodeNumber, path);
+              return newInodeNumber;
+            }
             throw new NoEntException("path " + path);
         }
         return inodeNumber;
@@ -143,32 +170,7 @@ public class LocalFileSystem implements VirtualFileSystem {
                 Files.createDirectories(exportRootPath);
             }
         }
-        //map existing structure (if any)
         map(fileId.getAndIncrement(), _root); //so root is always inode #1
-        Files.walkFileTree(_root, new SimpleFileVisitor<Path>() {
-            @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                FileVisitResult superRes = super.preVisitDirectory(dir, attrs);
-                if (superRes != FileVisitResult.CONTINUE) {
-                    return superRes;
-                }
-                if (dir.equals(_root)) {
-                    return FileVisitResult.CONTINUE;
-                }
-                map(fileId.getAndIncrement(), dir);
-                return FileVisitResult.CONTINUE;
-            }
-
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                FileVisitResult superRes = super.visitFile(file, attrs);
-                if (superRes != FileVisitResult.CONTINUE) {
-                    return superRes;
-                }
-                map(fileId.getAndIncrement(), file);
-                return FileVisitResult.CONTINUE;
-            }
-        });
     }
 
     @Override
@@ -210,6 +212,12 @@ public class LocalFileSystem implements VirtualFileSystem {
         Path parentPath = resolveInode(parentInodeNumber);
         Path child = parentPath.resolve(path);
         long childInodeNumber = resolvePath(child);
+	// We're going to check if the file exists here. It would be safer in resolvePath,
+	// but this should be much more efficient
+        if (!Files.exists(child, NOFOLLOW_LINKS)) {
+          unmap(childInodeNumber, child);
+          throw new NoEntException("path " + child);
+        }
         return toFh(childInodeNumber);
     }
 
@@ -241,19 +249,33 @@ public class LocalFileSystem implements VirtualFileSystem {
     }
 
     @Override
-    public DirectoryStream list(Inode inode, byte[] bytes, long l) throws IOException {
+    public DirectoryStream list(Inode inode, byte[] verifier, long l) throws IOException {
+        // I have no idea how to use the verifier. It's probably important. -- JJH
+        try {
+          List<DirectoryEntry> list = directoryCache.get(inode);
+          if ( l > (long) 0 )
+              l += 1; // Return cookies LARGER than l
+          return new DirectoryStream(list.subList((int)l, list.size()));
+          } catch (Exception e) {
+              throw new IllegalStateException(e);
+          }
+    }
+
+    private List<DirectoryEntry>  listLoader(Inode inode) throws IOException {
         long inodeNumber = getInodeNumber(inode);
         Path path = resolveInode(inodeNumber);
-        final List<DirectoryEntry> list = new ArrayList<>();
-        Files.newDirectoryStream(path).forEach(p -> {
-            try {
-                long cookie = resolvePath(p);
-                list.add(new DirectoryEntry(p.getFileName().toString(), toFh(cookie), statPath(p, cookie), list.size()));
-            } catch (Exception e) {
-                throw new IllegalStateException(e);
-            }
-        });
-        return new DirectoryStream(list);
+        List<DirectoryEntry> list = new ArrayList<>();
+        try (java.nio.file.DirectoryStream<Path> stream = Files.newDirectoryStream(path)) {
+            stream.forEach(p -> {
+                try {
+                    long cookie = resolvePath(p);
+                    list.add(new DirectoryEntry(p.getFileName().toString(), toFh(cookie), statPath(p, cookie), list.size()));
+                } catch (Exception e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+        }
+        return list;
     }
 
     @Override
@@ -435,6 +457,11 @@ public class LocalFileSystem implements VirtualFileSystem {
         Class<? extends  BasicFileAttributeView> attributeClass =
                 IS_UNIX ? PosixFileAttributeView.class : DosFileAttributeView.class;
 
+        // Unfortunately nfs4j will call getattr without calling lookup, so this check has to be here too.
+        if (!Files.exists(p, NOFOLLOW_LINKS)) {
+            unmap(inodeNumber, p);
+            throw new NoEntException("path " + p);
+        }
         BasicFileAttributes attrs = Files.getFileAttributeView(p, attributeClass, NOFOLLOW_LINKS).readAttributes();
 
         Stat stat = new Stat();
