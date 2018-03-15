@@ -27,7 +27,8 @@ public class App {
 
         try (SimpleNfsServer ignored = new SimpleNfsServer(arguments.getRpcPort(), arguments.getRoot(), exportFile, null)) {
             //noinspection ResultOfMethodCallIgnored
-            System.in.read(); //any key to shutdown
+            //System.in.read(); //any key to shutdown
+            Thread.currentThread().join();
         }
     }
 }
