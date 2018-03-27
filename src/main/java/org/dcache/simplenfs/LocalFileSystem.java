@@ -85,7 +85,7 @@ public class LocalFileSystem implements VirtualFileSystem {
 
     private final LoadingCache<Inode, List<DirectoryEntry> > directoryCache = CacheBuilder.newBuilder()
        .maximumSize(1000000)
-       .expireAfterWrite(5, TimeUnit.SECONDS)
+       .expireAfterWrite(30, TimeUnit.SECONDS)
        .build(
            new CacheLoader<Inode, List<DirectoryEntry> >() {
              public List<DirectoryEntry>  load(Inode inode) throws IOException {
