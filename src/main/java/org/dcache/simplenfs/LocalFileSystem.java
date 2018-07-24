@@ -170,7 +170,32 @@ public class LocalFileSystem implements VirtualFileSystem {
                 Files.createDirectories(exportRootPath);
             }
         }
+        //map existing structure (if any)
         map(fileId.getAndIncrement(), _root); //so root is always inode #1
+//        Files.walkFileTree(_root, new SimpleFileVisitor<Path>() {
+//            @Override
+//            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+//                FileVisitResult superRes = super.preVisitDirectory(dir, attrs);
+//                if (superRes != FileVisitResult.CONTINUE) {
+//                    return superRes;
+//                }
+//                if (dir.equals(_root)) {
+//                    return FileVisitResult.CONTINUE;
+//                }
+//                map(fileId.getAndIncrement(), dir);
+//                return FileVisitResult.CONTINUE;
+//            }
+//
+//            @Override
+//            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+//                FileVisitResult superRes = super.visitFile(file, attrs);
+//                if (superRes != FileVisitResult.CONTINUE) {
+//                    return superRes;
+//                }
+//                map(fileId.getAndIncrement(), file);
+//                return FileVisitResult.CONTINUE;
+//            }
+//        });
     }
 
     @Override
